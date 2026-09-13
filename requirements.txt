@@ -1,0 +1,6 @@
+# Vaaditut python-kirjastot malleille.
+numpy
+pandas
+scikit-learn
+xgboost
+kagglehub
