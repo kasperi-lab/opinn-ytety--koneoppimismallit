@@ -1,18 +1,5 @@
-# Identifier arvoa muuttamalla saadaan mallista joko baseline, tai parannettu ->
-# -> ilman tarvetta kahdelle eri mallitiedostolle
-
-identifier = input("baseline vai parannettu:")
-if identifier != "baseline" and identifier != "parannettu":
-    raise ValueError("Valitse baseline tai parannettu!")
-
-feature_importance_state = input("Feature importance valinta (Y/N)").strip()
-if feature_importance_state == "Y":
-    feature_importance_state = True
-elif feature_importance_state == "N":
-    feature_importance_state = False
-else:
-    raise ValueError("Valitse feature importancen käyttö.")
-
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
 import os
 import kagglehub
 import pandas as pd
@@ -20,18 +7,24 @@ import numpy as np
 from sklearn.inspection import permutation_importance
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import (
-    accuracy_score,
-    confusion_matrix,
-    classification_report,
-    roc_auc_score,
-    average_precision_score
-)
+from sklearn.metrics import (accuracy_score,confusion_matrix,classification_report,roc_auc_score,average_precision_score)
+
+
+# Baseline vai parannettu malliajo
+identifier = input("baseline vai parannettu:")
+if identifier != "baseline" and identifier != "parannettu":
+    raise ValueError("Valitse baseline tai parannettu!")
+
+# Piirteiden haku
+feature_importance_state = input("Feature importance valinta (Y/N)").strip()
+
+if feature_importance_state not in ["Y", "N"]:
+    raise ValueError("Valitse feature importancen käyttö")
+
 
 
 
 # Datasetin lataus kagglesta
-
 
 print("Luetaan aineisto.")
 
@@ -103,10 +96,23 @@ if identifier == "parannettu":
         "Bwd Packet Length Mean",
         "Idle Mean",
         "Avg Bwd Segment Size",
-        "Max Packet Length"
+        "Max Packet Length",
+        "Total Length of Fwd Packets"
     ]
 
     X = X.drop(columns=[c for c in features_to_remove if c in X.columns])
+
+
+# Poistetaan arvot mitkä ei muutu, eli arvo joko pelkkä 0 tai 1 ->
+# -> Jokaisessa havainnossa
+
+constant_columns = X.columns[
+    X.nunique(dropna=False) <= 1
+]
+
+X = X.drop(columns=constant_columns)
+
+
 
 
 X_train, X_test, y_train, y_test = train_test_split(
@@ -116,18 +122,6 @@ X_train, X_test, y_train, y_test = train_test_split(
     random_state=42,
     stratify=y
 )
-
-
-# Poistetaan arvot mitkä ei muutu, eli arvo joko pelkkä 0 tai 1 ->
-# -> Jokaisessa havainnossa
-
-constant_columns = X_train.columns[
-    X_train.nunique(dropna=False) <= 1
-]
-
-X_train = X_train.drop(columns=constant_columns)
-X_test = X_test.drop(columns=constant_columns)
-
 
 
 # Puuttuvat arvot
@@ -145,38 +139,57 @@ X_test = X_test.fillna(train_medians)
 print("Luodaan malli: ")
 
 
-if identifier == "parannettu":
+if identifier == "baseline":
+    # Luodaan ja koulutetaan baseline-malli
     rf = RandomForestClassifier(
-        n_estimators=800,
-        max_depth=20,
-        min_samples_split=5,
-        min_samples_leaf=2,
-        max_features="sqrt",
-        class_weight="balanced",
-        bootstrap=True,
-        n_jobs=-1,
-        random_state=42
+        random_state=42,
+        n_jobs=-1
     )
-
-elif identifier == "baseline":
-    rf = RandomForestClassifier(
-        n_estimators=500,
-        max_depth=None,
-        min_samples_split=2,
-        min_samples_leaf=1,
-        max_features="sqrt",
-        class_weight="balanced",
-        n_jobs=-1,
-        random_state=42
-    )
+    rf.fit(X_train, y_train)
 
 else:
-    raise ValueError("Parannettu vai Baseline?")
+    # Parannetussa ajossa haetaan parhaat parametrit
+    print("\nAloitetaan Random Forest -parametrihaku.")
+
+    search_model = RandomForestClassifier(
+        n_estimators=200,
+        random_state=42,
+        n_jobs=1
+    )
+
+    parameter_space = {
+        "max_depth": [None, 10, 20, 30],
+        "min_samples_split": [2, 5, 10],
+        "min_samples_leaf": [1, 2, 4],
+        "max_features": ["sqrt", "log2", 0.5],
+        "class_weight": [None, "balanced", "balanced_subsample"]
+    }
+
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+    search = RandomizedSearchCV(
+        estimator=search_model,
+        param_distributions=parameter_space,
+        n_iter=24,
+        scoring="f1",
+        cv=cv,
+        n_jobs=-1,
+        random_state=42,
+        verbose=2,
+        refit=True
+    )
+
+    search.fit(X_train, y_train)
+
+    print("Parhaat parametrit:", search.best_params_)
+
+    print("Paras keskimääräinen CV F1:", search.best_score_)
+
+    # Käytetään haun valitsemaa, koko opetusaineistolla koulutettua mallia
+    rf = search.best_estimator_
 
 
-print("Mallin opetus.")
 
-rf.fit(X_train, y_train)
 
 
 # Mallin ennusteet
@@ -200,7 +213,7 @@ cm = confusion_matrix(
 
 roc = roc_auc_score(y_test, y_proba)
 
-average_precision = average_precision_score(
+pr_auc = average_precision_score(
     y_test,
     y_proba
 )
@@ -220,31 +233,24 @@ precision = TP / (TP + FP)
 specificity = TN / (TN + FP)
 
 
-print(f'{identifier}-RF tulokset')
+print(f'\nRandom Forest {identifier} tulokset:') 
 print()
+print("Accuracy:", acc) 
+print("ROC-AUC:", roc) 
+print("AP:", pr_auc) 
+ 
+print("\nConfusion Matrix:") 
+print(cm) 
+ 
+print("\nFalse-negative ratio:", fn_rate) 
+print("Recall ratio:", recall) 
+ 
+print("\nClassification report:") 
+print(classification_report(y_test, y_pred)) 
 
-print("Accuracy:", acc)
-print("ROC-AUC:", roc)
-print("Average Precision:", average_precision)
 
-print("\nConfusion Matrix:")
-print(cm)
 
-print("\nFalse-negative ratio:", fn_rate)
-print("Recall:", recall)
-print("Precision:", precision)
-print("Specificity:", specificity)
-
-print("\nClassification report:")
-print(
-    classification_report(
-        y_test,
-        y_pred,
-        target_names=["BENIGN", "ATTACK"]
-    )
-)
-
-if feature_importance_state:
+if feature_importance_state == "Y":
     importance_result = permutation_importance(
         rf,
         X_test,
@@ -269,3 +275,5 @@ if feature_importance_state:
     print("\nFeature importance")
     print()
     print(feature_importance.to_string(index=False))
+
+

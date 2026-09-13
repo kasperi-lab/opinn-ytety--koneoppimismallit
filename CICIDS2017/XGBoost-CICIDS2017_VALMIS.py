@@ -1,19 +1,5 @@
-#XGBoost malli CICIDS2017 ainestossa
-
-
-identifier = input("baseline vai parannettu:")
-if identifier != "baseline" and identifier != "parannettu":
-    raise ValueError("Valitse baseline tai parannettu!")
-
-feature_importance_state = input("Feature importance valinta (Y/N)").strip()
-if feature_importance_state == "Y":
-    feature_importance_state = True
-elif feature_importance_state == "N":
-    feature_importance_state = False
-else:
-    raise ValueError("Valitse feature importancen käyttö.")
-
-
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
 import numpy as np 
 import pandas as pd 
 import os  
@@ -23,7 +9,21 @@ from xgboost import XGBClassifier
 from sklearn.model_selection import train_test_split 
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import classification_report, roc_auc_score, accuracy_score, confusion_matrix, average_precision_score 
- 
+
+
+identifier = input("baseline vai parannettu:")
+
+if identifier not in ["baseline", "parannettu"]:
+    raise ValueError("Valitse baseline tai parannettu!")
+
+# Piirrehaun valinta
+feature_importance_state = input("Feature importance valinta (Y/N)").strip()
+
+if feature_importance_state not in ["Y", "N"]:
+    raise ValueError("Valitse piirteiden haku")
+
+
+
 # Ladataan dataset
 path = kagglehub.dataset_download("aymenabb/ddos-evaluation-dataset-cic-ddos2019") 
 file_path = os.path.join(path, "Friday-WorkingHours-Afternoon-DDos.pcap_ISCX.csv") 
@@ -94,50 +94,63 @@ test_size = 0.2, random_state = 42, stratify=y)
  
 
 
-scale_pos_weight = (y == 0).sum() / (y == 1).sum() 
+scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
 
 # Mallin parametrit, parannettu
-if identifier == "parannettu":
+if identifier == "baseline":
+    # Luodaan ja koulutetaan baseline-malli
     model = XGBClassifier(
-        n_estimators=800,
-        max_depth=6,
-        learning_rate=0.03,
-
-        subsample=0.9,
-        colsample_bytree=0.8,
-
-        min_child_weight=2,
-        gamma=0.1,
-
-        reg_alpha=0.01,
-        reg_lambda=1.0,
-
-        scale_pos_weight=scale_pos_weight,
-
+        objective="binary:logistic",
         eval_metric="logloss",
-
-        n_jobs=-1,
-        random_state=42
+        random_state=42,
+        n_jobs=-1
     )
-
-# Mallin parametrit, baseline
-elif identifier == "baseline":
-    model = XGBClassifier(
-        n_estimators=800,
-        max_depth=6,
-        learning_rate=0.03,
-        subsample=0.9,
-        colsample_bytree=0.8,
-        scale_pos_weight=scale_pos_weight,
-        eval_metric="logloss",
-        random_state=42
-    )
+    model.fit(X_train, y_train)
 
 else:
-    raise ValueError("baseline vai parannettu?")
+    # Parannetussa ajossa haetaan parhaat parametrit
+    print("\nAloitetaan XGBoost-parametrihaku.")
+
+    search_model = XGBClassifier(
+        objective="binary:logistic",
+        eval_metric="logloss",
+        random_state=42,
+        n_jobs=1
+    )
+
+    parameter_space = {
+        "n_estimators": [100, 200, 400, 600],
+        "max_depth": [3, 5, 7, 9],
+        "learning_rate": [0.01, 0.03, 0.05, 0.1],
+        "subsample": [0.7, 0.85, 1.0],
+        "colsample_bytree": [0.7, 0.85, 1.0],
+        "min_child_weight": [1, 3, 5]
+    }
+
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+    search = RandomizedSearchCV(
+        estimator=search_model,
+        param_distributions=parameter_space,
+        n_iter=24,
+        scoring="f1",
+        cv=cv,
+        n_jobs=-1,
+        random_state=42,
+        verbose=2,
+        refit=True
+    )
+
+    search.fit(X_train, y_train)
+
+    print("Parhaat parametrit:", search.best_params_)
+
+    print("Paras keskimääräinen CV F1:", search.best_score_)
+
+    # Käytetään haun valitsemaa, koko opetusaineistolla koulutettua mallia
+    model = search.best_estimator_
 
 #Mallin luonti
-model.fit(X_train, y_train) 
 
 # Mallin ennustukset
 y_pred = model.predict(X_test) 
@@ -183,7 +196,7 @@ print(classification_report(y_test, y_pred))
 
 
 # Jos halutaan ajaa feature importance mallille
-if feature_importance_state:
+if feature_importance_state == "Y":
     importance_result = permutation_importance(
         model,
         X_test,
@@ -210,3 +223,4 @@ if feature_importance_state:
     print("\nFeature importance")
     print()
     print(feature_importance.to_string(index=False))
+

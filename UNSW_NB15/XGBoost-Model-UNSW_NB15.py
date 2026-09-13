@@ -1,38 +1,42 @@
+import numpy as np
+import pandas as pd
+from sklearn.inspection import permutation_importance
+from xgboost import XGBClassifier
+from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
+from sklearn.metrics import classification_report, roc_auc_score, accuracy_score, confusion_matrix, average_precision_score
+from Piirteiden_poisto_lista import features_to_be_removed
+
 
 # Halutaanko käyttää parannettua mallia vai baseline mallia (parametrit)
 identifier = input("baseline vai parannettu:").strip().lower()
-if identifier != "baseline" and identifier != "parannettu":
+
+if identifier not in ["baseline", "parannettu"]:
     raise ValueError("Valitse baseline tai parannettu!")
+
 
 # Halutaanko ajossa toteuttaa parametrihaku, eli parhaiden parametrien etsintä
 parameter_search_state = input("Parametrihaku valinta (Y/N): ").strip().upper()
-if parameter_search_state == "Y":
-    parameter_search_state = True
-elif parameter_search_state == "N":
-    parameter_search_state = False
-else:
+
+if parameter_search_state not in ["Y", "N"]:
     raise ValueError("Valitse parametrihaun käyttö: Y tai N.")
 
-# Halutaanko poistaa määritellyt piirteet mallin parantamiseksi
-from Piirteiden_poisto_lista import features_to_be_removed
 
+# Halutaanko tutkia piirteiden tärkeys mallille
+feature_importance = input("Näytetäänkö piirteiden tärkeys? (Y/N): ").strip().upper()
+
+if feature_importance not in ["Y", "N"]:
+    raise ValueError("Valitse Y tai N.")
+
+
+# Halutaanko poistaa määritellyt piirteet mallin parantamiseksi
 feature_removal = input("Poistetaanko piirteitä? (Y/N): ").strip().upper()
+
 if feature_removal not in ["Y", "N"]:
     raise ValueError("Valitse Y tai N.")
 
 
 
-
-import numpy as np
-import pandas as pd
-
-from xgboost import XGBClassifier
-from sklearn.model_selection import train_test_split, RandomizedSearchCV, StratifiedKFold
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics import classification_report, roc_auc_score, accuracy_score, confusion_matrix, average_precision_score
-
-
-
+#Aineistojen luku dataframeihin
 print("Luetaan aineistot")
 
 X_train = pd.read_csv("X_train_clean.csv")
@@ -41,15 +45,18 @@ y_train = pd.read_csv("y_train_clean.csv").squeeze()
 X_test = pd.read_csv("X_test_clean.csv")
 y_test = pd.read_csv("y_test_clean.csv").squeeze()
 
+# Poistetaan featuret, lista piirteiden_poisto_lista tiedostossa
 if feature_removal == "Y":
     X_train = X_train.drop(columns=[c for c in features_to_be_removed if c in X_train.columns])
     X_test = X_test.drop(columns=[c for c in features_to_be_removed if c in X_test.columns])
 
 
+# Varmistetaan että sarakkeet vastaavat toisiaan
 X_test = X_test[X_train.columns]
 
 scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
 
+# Mallin parametrien määritys, joko baseline tai parannettu valinnan mukaan
 print("Luodaan XGBoost malli")
 
 if identifier == "baseline":
@@ -73,21 +80,20 @@ else:
         n_jobs=-1
     )
 
+# Sovitetaan mallille opetusaineistot
 print("Mallin opetus")
 
 xgb.fit(X_train, y_train)
+
 
 # Mallin ennuste ja 1:n todennäköisyys
 y_pred = xgb.predict(X_test)
 y_proba = xgb.predict_proba(X_test)[:, 1]
 
 
-
 # Mittarien lasku
-
 acc = accuracy_score(y_test, y_pred)
 cm = confusion_matrix(y_test, y_pred)
-
 roc = roc_auc_score(y_test, y_proba)
 pr_auc = average_precision_score(y_test, y_proba)
 
@@ -102,25 +108,21 @@ recall = TP / (TP + FN)
 
 
 print(f"\nXGBoost {identifier} results")
-print("----------------")
-
+print()
 print("Accuracy:", acc)
 print("ROC-AUC:", roc)
 print("PR-AUC:", pr_auc)
-
 print("\nConfusion Matrix:")
 print(cm)
-
 print("\nFalse-negative ratio:", fn_rate)
 print("Recall ratio:", recall)
-
 print("\nClassification report:")
 print(classification_report(y_test, y_pred))
 print("Piirteiden poisto:", feature_removal)
 print("Piirteiden määrä:", X_train.shape[1])
 
 # Parametrihaku, jos päällä, baseline parametrit aluksi käytössä
-if parameter_search_state:
+if parameter_search_state == "Y":
     print("\nAloitetaan XGBoost-parametrihaku.")
 
     search_model = XGBClassifier(
@@ -129,7 +131,7 @@ if parameter_search_state:
         random_state=42,
         n_jobs=1
     )
-
+# Haussa käytössä olevat parametrit
     parameter_space = {
         "n_estimators": [100, 200, 400, 600],
         "max_depth": [3, 5, 7, 9],
@@ -169,3 +171,31 @@ if parameter_search_state:
     print(confusion_matrix(y_test, search_y_pred))
     print("Classification report:")
     print(classification_report(y_test, search_y_pred))
+
+
+if feature_importance == "Y":
+
+    importance_result = permutation_importance(
+        xgb,
+        X_test,
+        y_test,
+        scoring="f1",
+        n_repeats=10,
+        random_state=42,
+        n_jobs=1
+    )
+
+    feature_importance = pd.DataFrame({
+        "Feature": X_test.columns,
+        "Importance": importance_result.importances_mean,
+        "Std": importance_result.importances_std
+    })
+
+    feature_importance = feature_importance.sort_values(
+        by="Importance",
+        ascending=False
+    )
+
+    print("\nFeature importance")
+    print()
+    print(feature_importance.to_string(index=False))

@@ -1,38 +1,41 @@
-# Halutaanko käyttää parannettua mallia vai baseline mallia (parametrit)
-identifier = input("baseline vai parannettu:").strip().lower()
-if identifier != "baseline" and identifier != "parannettu":
-    raise ValueError("Valitse baseline tai parannettu!")
-
-# Halutaanko ajossa toteuttaa parametrihaku, eli parhaiden parametrien etsintä
-parameter_search_state = input("Parametrihaku valinta (Y/N): ").strip().upper()
-if parameter_search_state == "Y":
-    parameter_search_state = True
-elif parameter_search_state == "N":
-    parameter_search_state = False
-else:
-    raise ValueError("Valitse parametrihaun käyttö: Y tai N.")
-
-
-# Halutaanko poistaa määritellyt piirteet mallin parantamiseksi
-from Piirteiden_poisto_lista import features_to_be_removed
-
-feature_removal = input("Poistetaanko piirteitä? (Y/N): ").strip().upper()
-if feature_removal not in ["Y", "N"]:
-    raise ValueError("Valitse Y tai N.")
-
-
-
-
 import pandas as pd
 import numpy as np
-
-
+from Piirteiden_poisto_lista import features_to_be_removed
+from sklearn.inspection import permutation_importance
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, confusion_matrix, roc_auc_score, classification_report, average_precision_score
 from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 
+# Parannettu vai baseline-mallin ajo
+identifier = input("baseline vai parannettu:").strip().lower()
+
+if identifier not in ["baseline", "parannettu"]:
+    raise ValueError("Valitse baseline tai parannettu")
+
+# Halutaanko ajossa toteuttaa parametrihaku, eli parhaiden parametrien etsintä
+parameter_search_state = input("Parametrihaku valinta (Y/N): ").strip().upper()
+
+if parameter_search_state not in ["Y", "N"]:
+    raise ValueError("Valitse parametrihaun käyttö: Y tai N.")
+
+
+# Halutaanko poistaa määritellyt piirteet mallin parantamiseksi
+feature_removal = input("Poistetaanko piirteitä? (Y/N): ").strip().upper()
+
+if feature_removal not in ["Y", "N"]:
+    raise ValueError("Valitse piirteiden poisto: Y tai N.")
+
+
+# Piirteiden tärkeys valinta
+feature_importance = input("Näytetäänkö piirteiden tärkeys? (Y/N): ").strip().upper()
+
+if feature_importance not in ["Y", "N"]:
+    raise ValueError("Valitse Y tai N.")
+
+
+# Aineistojen luku dataframeiksi
 print("Luetaan aineistot.")
 
 X_train = pd.read_csv("X_train_clean.csv")
@@ -41,12 +44,15 @@ y_train = pd.read_csv("y_train_clean.csv").squeeze()
 X_test = pd.read_csv("X_test_clean.csv")
 y_test = pd.read_csv("y_test_clean.csv").squeeze()
 
+# Varmistetaan että sarakkeet vastaavat toisiaan
 X_test = X_test[X_train.columns]
 
+# Piirteiden poisto
 if feature_removal == "Y":
     X_train = X_train.drop(columns=[c for c in features_to_be_removed if c in X_train.columns])
     X_test = X_test.drop(columns=[c for c in features_to_be_removed if c in X_test.columns])
 
+# LR mallille tehtävä skaalaus
 print("Skaalaus: ")
 
 scaler = StandardScaler()
@@ -77,7 +83,6 @@ else:
     )
 
 print("Mallin opetus: ")
-
 
 
 lr.fit(X_train_scaled, y_train)
@@ -125,7 +130,7 @@ print(classification_report(y_test, y_pred))
 print("Piirteiden poisto:", feature_removal)
 print("Piirteiden määrä:", X_train.shape[1])
 
-if parameter_search_state:
+if parameter_search_state == "Y":
     print("logistic regression parametrihaku.")
 
     search_model = Pipeline([
@@ -170,3 +175,31 @@ if parameter_search_state:
     print(confusion_matrix(y_test, search_y_pred))
     print("\nClassification report:")
     print(classification_report(y_test, search_y_pred))
+
+
+if feature_importance == "Y":
+
+    importance_result = permutation_importance(
+    lr,
+    X_test_scaled,
+    y_test,
+    scoring="f1",
+    n_repeats=10,
+    random_state=42,
+    n_jobs=1
+)
+
+    feature_importance = pd.DataFrame({
+        "Feature": X_test.columns,
+        "Importance": importance_result.importances_mean,
+        "Std": importance_result.importances_std
+    })
+
+    feature_importance = feature_importance.sort_values(
+        by="Importance",
+        ascending=False
+    )
+
+    print("\nFeature importance")
+    print()
+    print(feature_importance.to_string(index=False))

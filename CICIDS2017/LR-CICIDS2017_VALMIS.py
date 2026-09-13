@@ -1,38 +1,30 @@
-identifier = input("baseline vai parannettu:")
-if identifier != "baseline" and identifier != "parannettu":
-    raise ValueError("Valitse baseline tai parannettu!")
-
-feature_importance_state = input("Feature importance valinta (Y/N)").strip()
-if feature_importance_state == "Y":
-    feature_importance_state = True
-elif feature_importance_state == "N":
-    feature_importance_state = False
-else:
-    raise ValueError("Valitse feature importancen käyttö.")
-
-
-#
-#Tarvittavat importit
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
+from sklearn.pipeline import Pipeline
 import os 
 import kagglehub 
 import pandas as pd 
 import numpy as np 
 from sklearn.model_selection import train_test_split 
 from sklearn.linear_model import LogisticRegression 
-from sklearn.metrics import ( 
-    accuracy_score, 
-    confusion_matrix, 
-    roc_auc_score, 
-    classification_report, 
-    average_precision_score 
-) 
+from sklearn.metrics import ( accuracy_score, confusion_matrix, roc_auc_score, classification_report, average_precision_score ) 
 from sklearn.preprocessing import StandardScaler 
 from sklearn.inspection import permutation_importance
-#Tarvittavat importit
-#
+
+# Mallin valinta
+identifier = input("baseline vai parannettu:")
+
+if identifier not in ["baseline", "parannettu"]:
+    raise ValueError("Valitse baseline tai parannettu!")
+
+# Feature importancen näyttäminen
+feature_importance_state = input("Feature importance valinta (Y/N)").strip()
+
+if feature_importance_state not in ["Y", "N"]:
+    raise ValueError("Valitse feature importancen käyttö.")
+
 
  
-# Download dataset 
+# Aineiston lataus
 path = kagglehub.dataset_download( 
     "aymenabb/ddos-evaluation-dataset-cic-ddos2019" 
 ) 
@@ -94,7 +86,8 @@ if identifier == "parannettu":
         "Bwd Packet Length Mean",
         "Idle Mean",
         "Avg Bwd Segment Size",
-        "Max Packet Length"
+        "Max Packet Length",
+        "Total Length of Fwd Packets"
     ]
 
     X = X.drop(columns=[c for c in features_to_remove if c in X.columns])
@@ -126,47 +119,74 @@ X_train = X_train.fillna(train_medians)
 X_test = X_test.fillna(train_medians) 
  
  
-# Skaalataan X:n arvot mallille käyttäen standardscaleria
-scaler = StandardScaler() 
- 
-X_train_scaled = scaler.fit_transform(X_train) 
-X_test_scaled = scaler.transform(X_test) 
+# LR:n skaalaus tehdään mallin Pipelinessä
  
  
  
-# Parametrit - Baseline
+ 
+# Baseline tai parametrihaulla valittu malli
 if identifier == "baseline":
-    lr = LogisticRegression(
+    # Luodaan ja koulutetaan baseline-malli
+    lr = Pipeline([
+        ("scaler", StandardScaler()),
+        ("model", LogisticRegression(
         C=1,
         max_iter=2000,
         class_weight="balanced",
         penalty="l2",
         solver="lbfgs",
         random_state=42
-    )
+    ))
+    ])
+    lr.fit(X_train, y_train)
 
-# Parametrit - parannettu
 else:
-    lr = LogisticRegression(
-        C=0.5,
-        max_iter=3000,
-        class_weight="balanced",
-        penalty="l2",
-        solver="lbfgs",
-        tol=1e-4,
-        random_state=42
+    # Parannetussa ajossa haetaan parhaat parametrit
+    print("logistic regression parametrihaku.")
+
+    search_model = Pipeline([
+        ("scaler", StandardScaler()),
+        ("model", LogisticRegression(max_iter=2000, random_state=42))
+    ])
+
+    parameter_space = {
+        "model__C": [0.1, 0.5, 1.0, 2.0],
+        "model__class_weight": [None, "balanced"],
+        "model__penalty": ["l2"],
+        "model__solver": ["lbfgs"]
+    }
+
+    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+
+    search = RandomizedSearchCV(
+        estimator=search_model,
+        param_distributions=parameter_space,
+        n_iter=8,
+        scoring="f1",
+        cv=cv,
+        n_jobs=-1,
+        random_state=42,
+        verbose=2,
+        refit=True
     )
 
-print("Mallin opetus:") 
+    search.fit(X_train, y_train)
+
+    print("\nParhaat parametrit:", search.best_params_)
+
+    print("Paras keskimääräinen CV F1:", search.best_score_)
+
+    # Käytetään haun valitsemaa, koko opetusaineistolla koulutettua mallia
+    lr = search.best_estimator_
+
  
-lr.fit(X_train_scaled, y_train) 
  
  
  # Ennustus
-y_pred = lr.predict(X_test_scaled) 
+y_pred = lr.predict(X_test) 
  
 # Attack luokan todennäköisyys havainnolle
-y_proba = lr.predict_proba(X_test_scaled)[:, 1] 
+y_proba = lr.predict_proba(X_test)[:, 1] 
  
  
 # Mittareiden lasku
@@ -186,12 +206,11 @@ fn_rate = FN / (FN + TP)
 recall = TP / (TP + FN) 
  
  
-print(f'LR {identifier} tulokset:') 
-print() 
- 
+print(f'\nLogistic regression {identifier} tulokset:') 
+print()
 print("Accuracy:", acc) 
 print("ROC-AUC:", roc) 
-print("PR-AUC:", pr_auc) 
+print("AP:", pr_auc) 
  
 print("\nConfusion Matrix:") 
 print(cm) 
@@ -200,13 +219,13 @@ print("\nFalse-negative ratio:", fn_rate)
 print("Recall ratio:", recall) 
  
 print("\nClassification report:") 
-print(classification_report(y_test, y_pred))
+print(classification_report(y_test, y_pred)) 
 
-if feature_importance_state:
+if feature_importance_state == "Y":
 
     importance_result = permutation_importance(
         lr,
-        X_test_scaled,
+        X_test,
         y_test,
         scoring="f1",
         n_repeats=10,
@@ -228,3 +247,5 @@ if feature_importance_state:
     print("\nFeature importance")
     print()
     print(feature_importance.to_string(index=False))
+
+
